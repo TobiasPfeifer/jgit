@@ -75,6 +75,7 @@ import org.eclipse.jgit.lib.RebaseTodoLine;
 import org.eclipse.jgit.lib.RebaseTodoLine.Action;
 import org.eclipse.jgit.lib.RefUpdate;
 import org.eclipse.jgit.lib.ReflogEntry;
+import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.lib.RepositoryState;
 import org.eclipse.jgit.merge.MergeStrategy;
 import org.eclipse.jgit.merge.ResolveMerger.MergeFailureReason;
@@ -1634,6 +1635,72 @@ public class RebaseCommandTest extends RepositoryTestCase {
 		assertEquals(2, steps.size());
 		assertEquals("1111111", steps.get(0).getCommit().name());
 		assertEquals("2222222", steps.get(1).getCommit().name());
+	}
+
+	@Test
+	public void testRebaseShouldNotFailIfUserAddCommentLinesInPrepareSteps()
+			throws Exception {
+		// create file1 on master
+		writeTrashFile(FILE1, FILE1);
+		git.add().addFilepattern(FILE1).call();
+		git.commit().setMessage("Add file1").call();
+		assertTrue(new File(db.getWorkTree(), FILE1).exists());
+
+		// create file2 on master
+		writeTrashFile("file2", "file2");
+		git.add().addFilepattern("file2").call();
+		RevCommit c2 = git.commit().setMessage("Add file2").call();
+		assertTrue(new File(db.getWorkTree(), "file2").exists());
+
+		// update FILE1 on master
+		writeTrashFile(FILE1, "blah");
+		git.add().addFilepattern(FILE1).call();
+		git.commit().setMessage("updated file1 on master").call();
+
+		writeTrashFile("file2", "more change");
+		git.add().addFilepattern("file2").call();
+		RevCommit c4 = git.commit().setMessage("update file2 on side")
+				.call();
+
+		RebaseResult res = git.rebase().setUpstream("HEAD~2")
+				.runInteractively(new InteractiveHandler() {
+					public void prepareSteps(List<RebaseTodoLine> steps) {
+						steps.add(0, new RebaseTodoLine(
+								"# Comment that should not be processed"));
+					}
+
+					public String modifyCommitMessage(String commit) {
+						fail("modifyCommitMessage() was not expected to be called");
+						return commit;
+					}
+				}).call();
+
+		assertEquals(RebaseResult.Status.FAST_FORWARD, res.getStatus());
+
+		RebaseResult res2 = git.rebase().setUpstream("HEAD~2")
+				.runInteractively(new InteractiveHandler() {
+					public void prepareSteps(List<RebaseTodoLine> steps) {
+						steps.get(0).setAction(Action.COMMENT); // delete
+																// RevCommit c4
+					}
+
+					public String modifyCommitMessage(String commit) {
+						fail("modifyCommitMessage() was not expected to be called");
+						return commit;
+					}
+				}).call();
+
+		assertEquals(RebaseResult.Status.OK, res2.getStatus());
+
+		ObjectId headId = db.resolve(Constants.HEAD);
+		RevWalk rw = new RevWalk(db);
+		RevCommit rc = rw.parseCommit(headId);
+
+		ObjectId head1Id = db.resolve(Constants.HEAD + "~1");
+		RevCommit rc1 = rw.parseCommit(head1Id);
+
+		assertEquals(rc.getFullMessage(), c4.getFullMessage());
+		assertEquals(rc1.getFullMessage(), c2.getFullMessage());
 	}
 
 	@Test
